@@ -1,4 +1,5 @@
 # DOSMatGen
+[![arXiv](https://img.shields.io/badge/arXiv-1234.56789-b31b1b.svg)](https://arxiv.org/abs/2504.06249)
 Electronic Structure Guided Inverse Design Using Generative Models
 
 ## Environment
@@ -89,4 +90,14 @@ DOSMatGen
 │   └── utils
 └── structures
     └── 08032025_160513
+```
+
+## Citation
+```
+@article{jia2025electronic,
+  title={Electronic Structure Guided Inverse Design Using Generative Models},
+  author={Jia, Shuyi and Ganesh, Panchapakesan and Fung, Victor},
+  journal={arXiv preprint arXiv:2504.06249},
+  year={2025}
+}
 ```
