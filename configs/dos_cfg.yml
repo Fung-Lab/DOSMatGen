@@ -1,0 +1,124 @@
+run_name: dos_cfg
+save_dir: outputs
+
+train:
+  deterministic: True
+  random_seed: 2024
+  trainer:
+    precision: 32
+    max_epochs: 1000
+    accumulate_grad_batches: 1
+    num_sanity_val_steps: 2
+    gradient_clip_val: 0.5
+    gradient_clip_algorithm: value
+    profiler: simple
+
+  early_stopping:
+    patience: 100000
+    verbose: False
+  
+  model_checkpoints:
+    save_top_k: 1
+    verbose: False
+    save_last: False
+  
+logging:
+  val_check_interval: 5
+
+  wandb:
+    project: spec2struct
+    entity: null
+    log_model: True
+    mode: online
+  
+  wandb_watch:
+    log: all
+    log_freq: 500
+  
+  lr_monitor:
+    logging_interval: step
+    log_momentum: False
+
+diffusion:
+  time_dim: 256
+  latent_dim: 0
+  cost_type: 20.
+  cost_coord: 1.
+  cost_lattice: 1.
+  timesteps: 1000
+
+  model:
+    hidden_dim: 512
+    num_layers: 6
+    max_atoms: 100
+    act_fn: 'silu'
+    dis_emb: sin
+    num_freqs: 128
+    edge_style: fc
+    cutoff: 7.0
+    max_neighbors: 20
+    ln: True
+    ip: True
+    smooth: True 
+    pred_type: True
+    pred_graph_level: False
+    pred_node_level: True
+    pred_dim: 400
+    # classifier-free guidance settings
+    cfg: True
+    cfg_prob: 0.2
+
+  beta_scheduler:
+    scheduler_mode: cosine
+
+  sigma_scheduler:
+    sigma_begin: 0.005
+    sigma_end: 0.5
+
+optim:
+  optimizer: Adam
+  params:
+    lr: 0.001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+    weight_decay: 0
+  lr_scheduler:
+    use_lr_scheduler: True
+    scheduler: ReduceLROnPlateau
+    monitor_metric: val_loss
+    monitor_metric_mode: min
+    params:
+      factor: 0.6
+      patience: 30
+      min_lr: 1e-4
+
+property: y
+niggli: False
+primitive: False
+graph_method: crystalnn
+preprocess_workers: 128
+lattice_scale_method: scale_length
+tolerance: 0.1
+
+datamodule:
+  datasets:
+    train:
+      name: DOS train
+      dataset_path: data/mp_dos/train.json
+      targets_path: null
+      save_path: data/mp_dos/train_ori.pt
+    val:
+      name: DOS val
+      dataset_path: data/mp_dos/val.json
+      targets_path: null
+      save_path: data/mp_dos/val_ori.pt
+    test:
+      name: DOS test
+      dataset_path: data/mp_dos/test.json
+      targets_path: null
+      save_path: data/mp_dos/test_ori.pt
+
+  batch_size:
+    train: 256
+    val: 128
+    test: 128

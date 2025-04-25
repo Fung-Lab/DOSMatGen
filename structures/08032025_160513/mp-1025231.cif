@@ -1,0 +1,32 @@
+data_image0
+_chemical_formula_structural       Nd2CrS4
+_chemical_formula_sum              "Nd2 Cr1 S4"
+_cell_length_a       6.763632529447006
+_cell_length_b       6.770137527132901
+_cell_length_c       7.306119938676497
+_cell_angle_alpha    63.84098603636692
+_cell_angle_beta     63.718100577887206
+_cell_angle_gamma    33.120098848722925
+
+_space_group_name_H-M_alt    "P 1"
+_space_group_IT_number       1
+
+loop_
+  _space_group_symop_operation_xyz
+  'x, y, z'
+
+loop_
+  _atom_site_type_symbol
+  _atom_site_label
+  _atom_site_symmetry_multiplicity
+  _atom_site_fract_x
+  _atom_site_fract_y
+  _atom_site_fract_z
+  _atom_site_occupancy
+  Nd  Nd1       1.0  0.8892457485198975  0.582508683204651  0.2687376141548157  1.0000
+  Nd  Nd2       1.0  0.4731811583042145  0.1687480807304383  0.663069784641266  1.0000
+  Cr  Cr1       1.0  0.16359330713748932  0.8600977063179016  0.9778921604156494  1.0000
+  S   S1        1.0  0.0820285975933075  0.7776879668235779  0.37775978446006775  1.0000
+  S   S2        1.0  0.2752313315868376  0.9721246957778933  0.5594314336776735  1.0000
+  S   S3        1.0  0.794735312461853  0.4908587038517  0.9818961024284365  1.0000
+  S   S4        1.0  0.508662223815918  0.2054100036621094  0.008818577975034742  1.0000
