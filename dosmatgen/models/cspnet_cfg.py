@@ -494,11 +494,11 @@ class CSPNet(nn.Module):
 
         for i in range(0, self.num_layers):
             node_features = self._modules["csp_layer_%d" % i](
-                node_features, 
-                frac_coords, 
-                lattices, 
-                edges, 
-                edge2graph, 
+                node_features,
+                frac_coords,
+                lattices,
+                edges,
+                edge2graph,
                 frac_diff=frac_diff
             )
 
@@ -530,7 +530,63 @@ class CSPNet(nn.Module):
             lattice_out = torch.einsum('bij,bjk->bik', lattice_out, lattices)
         if self.pred_type:
             type_out = self.type_out(node_features)
-        
+
         return coord_out, lattice_out, type_out, graph_out, node_out
 
-    
+    def masked_conditional(self, t, atom_types, frac_coords, lattices, num_atoms, node2graph, y=None, mask=None):
+        edges, frac_diff = self.gen_edges(num_atoms, frac_coords, lattices, node2graph)
+        edge2graph = node2graph[edges[0]]
+        if self.smooth:
+            node_features = self.node_embedding(atom_types)
+        else:
+            node_features = self.node_embedding(atom_types-1)
+
+        t_per_atom = t.repeat_interleave(num_atoms, dim=0)
+
+        y = y.to(t_per_atom.dtype)
+        y_proj = self.y_projection(y) * mask  # zero out unconditioned atoms after projection
+        node_features = node_features + y_proj
+
+        node_features = torch.cat([node_features, t_per_atom], dim=1)
+
+        node_features = self.atom_latent_emb(node_features)
+
+        for i in range(0, self.num_layers):
+            node_features = self._modules["csp_layer_%d" % i](
+                node_features,
+                frac_coords,
+                lattices,
+                edges,
+                edge2graph,
+                frac_diff=frac_diff
+            )
+
+        if self.ln:
+            node_features = self.final_layer_norm(node_features)
+
+        coord_out = None
+        lattice_out = None
+        type_out = None
+        graph_out = None
+        node_out = None
+
+        coord_out = self.coord_out(node_features)
+
+        if self.pred_node_level:
+            node_out = self.node_out(node_features)
+
+        graph_features = scatter(node_features, node2graph, dim=0, reduce='mean')
+
+        if self.pred_graph_level:
+            graph_out = self.graph_out(graph_features)
+
+        lattice_out = self.lattice_out(graph_features)
+        lattice_out = lattice_out.view(-1, 3, 3)
+
+        if self.ip:
+            lattice_out = torch.einsum('bij,bjk->bik', lattice_out, lattices)
+        if self.pred_type:
+            type_out = self.type_out(node_features)
+
+        return coord_out, lattice_out, type_out, graph_out, node_out
+

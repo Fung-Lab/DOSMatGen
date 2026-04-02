@@ -20,6 +20,16 @@ from dosmatgen.utils.utils import decode
 from dosmatgen.dataset.datamodule import CrystalDataModule, worker_init_fn
 from dosmatgen.dataset.dataset import CrystalDataset
 
+def build_first_atom_mask(batch, device):
+    """Returns a (num_atoms, 1) mask that conditions only the first atom of each structure."""
+    mask = torch.zeros(batch.num_nodes, 1, device=device)
+    offset = 0
+    for n in batch.num_atoms:
+        mask[offset] = 1.0
+        offset += n
+    return mask
+
+
 def diffuse(
     data_loader,
     model,
@@ -36,10 +46,13 @@ def diffuse(
         batch = batch.to('cuda')
         batch_outputs = []
         count += 1
-        
+
+        mask = build_first_atom_mask(batch, device='cuda')
+
         for i in range(n_candidates):
-            outputs, _ = model.cfg_sample(
+            outputs, _ = model.masked_cfg_sample(
                 batch,
+                mask,
                 step_lr=step_lr,
                 diff_ratio=diff_ratio,
                 w=w

@@ -289,182 +289,6 @@ class CSPDiffusion(BaseModule):
         return traj[0], traj_stack
     
     @torch.no_grad()
-    def masked_sample(self, batch, diff_ratio=1.0, step_lr=1e-5, mask=None):
-        batch_size = batch.num_graphs
-
-        l_T = torch.randn([batch_size, 3, 3]).to(self.device)
-        x_T = torch.rand([batch.num_nodes, 3]).to(self.device)
-        t_T = torch.randn([batch.num_nodes, MAX_ATOMIC_NUM]).to(self.device)
-
-        if self.keep_coords:
-            x_T = batch.frac_coords
-        if self.keep_lattice:
-            l_T = lattice_params_to_matrix_torch(batch.lengths, batch.angles)
-        
-        traj = {
-            self.beta_scheduler.timesteps: {
-                'num_atoms' : batch.num_atoms,
-                'atom_types' : t_T,
-                'frac_coords' : x_T % 1.,
-                'lattices' : l_T
-            }
-        }
-
-        for t in tqdm(range(self.beta_scheduler.timesteps, 0, -1)):
-            times = torch.full((batch_size,), t, device=self.device)
-            time_emb = self.time_embedding(times)
-            
-            alphas = self.beta_scheduler.alphas[t]
-            alphas_cumprod = self.beta_scheduler.alphas_cumprod[t]
-
-            sigmas = self.beta_scheduler.sigmas[t]
-            sigma_x = self.sigma_scheduler.sigmas[t]
-            sigma_norm = self.sigma_scheduler.sigmas_norm[t]
-
-            c0 = 1.0 / torch.sqrt(alphas)
-            c1 = (1 - alphas) / torch.sqrt(1 - alphas_cumprod)
-
-            x_t = traj[t]['frac_coords']
-            l_t = traj[t]['lattices']
-            t_t = traj[t]['atom_types']
-
-            if self.keep_coords:
-                x_t = x_T
-            if self.keep_lattice:
-                l_t = l_T
-
-            # Corrector
-            rand_l = torch.randn_like(l_T) if t > 1 else torch.zeros_like(l_T)
-            rand_t = torch.randn_like(t_T) if t > 1 else torch.zeros_like(t_T)
-            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
-
-            step_size = step_lr * (sigma_x / self.sigma_scheduler.sigma_begin) ** 2
-            std_x = torch.sqrt(2 * step_size)
-
-            y = batch.y * mask
-
-            pred_x, pred_l, pred_t, _, _, = self.decoder(
-                time_emb, 
-                t_t, 
-                x_t, 
-                l_t, 
-                batch.num_atoms, 
-                batch.batch,
-                y
-            )
-
-            pred_x = pred_x * torch.sqrt(sigma_norm)
-            x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
-            l_t_minus_05 = l_t
-            t_t_minus_05 = t_t
-
-            # Predictor
-            rand_l = torch.randn_like(l_T) if t > 1 else torch.zeros_like(l_T)
-            rand_t = torch.randn_like(t_T) if t > 1 else torch.zeros_like(t_T)
-            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
-
-            adjacent_sigma_x = self.sigma_scheduler.sigmas[t-1] 
-            step_size = (sigma_x ** 2 - adjacent_sigma_x ** 2)
-            std_x = torch.sqrt((adjacent_sigma_x ** 2 * (sigma_x ** 2 - adjacent_sigma_x ** 2)) / (sigma_x ** 2))   
-
-            pred_x, pred_l, pred_t, _, _= self.decoder(
-                time_emb, 
-                t_t_minus_05, 
-                x_t_minus_05, 
-                l_t_minus_05, 
-                batch.num_atoms, 
-                batch.batch,
-                y
-            )
-
-            pred_x = pred_x * torch.sqrt(sigma_norm)
-
-            x_t_minus_1 = x_t_minus_05 - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
-            l_t_minus_1 = c0 * (l_t_minus_05 - c1 * pred_l) + sigmas * rand_l if not self.keep_lattice else l_t
-            t_t_minus_1 = c0 * (t_t_minus_05 - c1 * pred_t) + sigmas * rand_t
-
-            traj[t - 1] = {
-                'num_atoms' : batch.num_atoms,
-                'atom_types' : t_t_minus_1,
-                'frac_coords' : x_t_minus_1 % 1.,
-                'lattices' : l_t_minus_1              
-            }
-
-        traj_stack = {
-            'num_atoms' : batch.num_atoms,
-            'atom_types' : torch.stack([traj[i]['atom_types'] for i in range(self.beta_scheduler.timesteps, -1, -1)]).argmax(dim=-1) + 1,
-            'all_frac_coords' : torch.stack([traj[i]['frac_coords'] for i in range(self.beta_scheduler.timesteps, -1, -1)]),
-            'all_lattices' : torch.stack([traj[i]['lattices'] for i in range(self.beta_scheduler.timesteps, -1, -1)])
-        }
-
-        res = traj[0]
-        res['atom_types'] = res['atom_types'].argmax(dim=-1) + 1
-
-        return traj[0], traj_stack
-
-    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        output_dict = self(batch)
-
-        loss_lattice = output_dict['loss_lattice']
-        loss_coord = output_dict['loss_coord']
-        loss_type = output_dict['loss_type']
-        loss = output_dict['loss']
-
-        self.log_dict(
-            {
-                'train_loss': loss,
-                'lattice_loss': loss_lattice,
-                'coord_loss': loss_coord,
-                'type_loss': loss_type
-            },
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True
-        )
-
-        if loss.isnan():
-            return None
-
-        return loss
-
-    def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        output_dict = self(batch)
-
-        log_dict, loss = self.compute_stats(output_dict, prefix='val')
-
-        self.log_dict(
-            log_dict,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-        )
-        return loss
-
-    def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        output_dict = self(batch)
-
-        log_dict, loss = self.compute_stats(output_dict, prefix='test')
-
-        self.log_dict(
-            log_dict,
-        )
-        return loss
-
-    def compute_stats(self, output_dict, prefix):
-        loss_lattice = output_dict['loss_lattice']
-        loss_coord = output_dict['loss_coord']
-        loss_type = output_dict['loss_type']
-        loss = output_dict['loss']
-
-        log_dict = {
-            f'{prefix}_loss': loss,
-            f'{prefix}_lattice_loss': loss_lattice,
-            f'{prefix}_coord_loss': loss_coord,
-            f'{prefix}_type_loss': loss_type,
-        }
-        return log_dict, loss
-    
-    @torch.no_grad()
     def cfg_sample(self, batch, diff_ratio=1.0, step_lr=1e-5, w=1.0):
         batch_size = batch.num_graphs
 
@@ -563,17 +387,9 @@ class CSPDiffusion(BaseModule):
                 conditional=True
             )
 
-            pred_x = (1-w) * cod_pred_x + w * uncod_pred_x
-            pred_l = (1-w) * cod_pred_l + w * uncod_pred_l
-            pred_t = (1-w) * cod_pred_t + w * uncod_pred_t
-
-            # pred_x = (1+w) * uncod_pred_x - w * cod_pred_x
-            # pred_l = (1+w) * uncod_pred_l - w * cod_pred_l
-            # pred_t = (1+w) * uncod_pred_t - w * cod_pred_t
-
-            # pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
-            # pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
-            # pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
             x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
@@ -615,17 +431,9 @@ class CSPDiffusion(BaseModule):
                 conditional=True
             )
 
-            pred_x = (1-w) * cod_pred_x + w * uncod_pred_x
-            pred_l = (1-w) * cod_pred_l + w * uncod_pred_l
-            pred_t = (1-w) * cod_pred_t + w * uncod_pred_t
-
-            # pred_x = (1+w) * uncod_pred_x - w * cod_pred_x
-            # pred_l = (1+w) * uncod_pred_l - w * cod_pred_l
-            # pred_t = (1+w) * uncod_pred_t - w * cod_pred_t
-
-            # pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
-            # pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
-            # pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
 
@@ -651,7 +459,143 @@ class CSPDiffusion(BaseModule):
         res['atom_types'] = res['atom_types'].argmax(dim=-1) + 1
 
         return traj[0], traj_stack
-    
+
+    @torch.no_grad()
+    def masked_cfg_sample(self, batch, mask, diff_ratio=1.0, step_lr=1e-5, w=1.0):
+        batch_size = batch.num_graphs
+
+        l_T = torch.randn([batch_size, 3, 3]).to(self.device)
+        x_T = torch.rand([batch.num_nodes, 3]).to(self.device)
+        t_T = torch.randn([batch.num_nodes, MAX_ATOMIC_NUM]).to(self.device)
+
+        if diff_ratio < 1:
+            time_start = int(self.beta_scheduler.timesteps * diff_ratio)
+            lattices = lattice_params_to_matrix_torch(batch.lengths, batch.angles)
+            atom_types_onehot = F.one_hot(batch.atom_types-1, num_classes=MAX_ATOMIC_NUM).float()
+            frac_coords = batch.frac_coords
+            rand_l = torch.randn_like(lattices)
+            rand_x = torch.randn_like(frac_coords)
+            rand_t = torch.randn_like(atom_types_onehot)
+
+            alphas_cumprod = self.beta_scheduler.alphas_cumprod[time_start]
+            beta = self.beta_scheduler.betas[time_start]
+            c0 = torch.sqrt(alphas_cumprod)
+            c1 = torch.sqrt(1. - alphas_cumprod)
+            sigmas = self.sigma_scheduler.sigmas[time_start]
+            l_T = c0 * lattices + c1 * rand_l
+            x_T = (frac_coords + sigmas * rand_x) % 1.
+            t_T = c0 * atom_types_onehot + c1 * rand_t
+        else:
+            time_start = self.beta_scheduler.timesteps
+
+        if self.keep_coords:
+            x_T = batch.frac_coords
+        if self.keep_lattice:
+            l_T = lattice_params_to_matrix_torch(batch.lengths, batch.angles)
+
+        traj = {
+            time_start: {
+                'num_atoms' : batch.num_atoms,
+                'atom_types' : t_T,
+                'frac_coords' : x_T % 1.,
+                'lattices' : l_T
+            }
+        }
+
+        for t in tqdm(range(time_start, 0, -1)):
+            times = torch.full((batch_size,), t, device=self.device)
+            time_emb = self.time_embedding(times)
+
+            alphas = self.beta_scheduler.alphas[t]
+            alphas_cumprod = self.beta_scheduler.alphas_cumprod[t]
+
+            sigmas = self.beta_scheduler.sigmas[t]
+            sigma_x = self.sigma_scheduler.sigmas[t]
+            sigma_norm = self.sigma_scheduler.sigmas_norm[t]
+
+            c0 = 1.0 / torch.sqrt(alphas)
+            c1 = (1 - alphas) / torch.sqrt(1 - alphas_cumprod)
+
+            x_t = traj[t]['frac_coords']
+            l_t = traj[t]['lattices']
+            t_t = traj[t]['atom_types']
+
+            if self.keep_coords:
+                x_t = x_T
+            if self.keep_lattice:
+                l_t = l_T
+
+            # Corrector
+            rand_l = torch.randn_like(l_T) if t > 1 else torch.zeros_like(l_T)
+            rand_t = torch.randn_like(t_T) if t > 1 else torch.zeros_like(t_T)
+            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
+
+            step_size = step_lr * (sigma_x / self.sigma_scheduler.sigma_begin) ** 2
+            std_x = torch.sqrt(2 * step_size)
+
+            uncod_pred_x, uncod_pred_l, uncod_pred_t, _, _ = self.decoder(
+                time_emb, t_t, x_t, l_t, batch.num_atoms, batch.batch, batch.y,
+                unconditional=True, conditional=False
+            )
+            cod_pred_x, cod_pred_l, cod_pred_t, _, _ = self.decoder.masked_conditional(
+                time_emb, t_t, x_t, l_t, batch.num_atoms, batch.batch, y=batch.y, mask=mask
+            )
+
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+
+            pred_x = pred_x * torch.sqrt(sigma_norm)
+            x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
+            l_t_minus_05 = l_t
+            t_t_minus_05 = t_t
+
+            # Predictor
+            rand_l = torch.randn_like(l_T) if t > 1 else torch.zeros_like(l_T)
+            rand_t = torch.randn_like(t_T) if t > 1 else torch.zeros_like(t_T)
+            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
+
+            adjacent_sigma_x = self.sigma_scheduler.sigmas[t-1]
+            step_size = (sigma_x ** 2 - adjacent_sigma_x ** 2)
+            std_x = torch.sqrt((adjacent_sigma_x ** 2 * (sigma_x ** 2 - adjacent_sigma_x ** 2)) / (sigma_x ** 2))
+
+            uncod_pred_x, uncod_pred_l, uncod_pred_t, _, _ = self.decoder(
+                time_emb, t_t_minus_05, x_t_minus_05, l_t_minus_05, batch.num_atoms, batch.batch, batch.y,
+                unconditional=True, conditional=False
+            )
+            cod_pred_x, cod_pred_l, cod_pred_t, _, _ = self.decoder.masked_conditional(
+                time_emb, t_t_minus_05, x_t_minus_05, l_t_minus_05, batch.num_atoms, batch.batch, y=batch.y, mask=mask
+            )
+
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+
+            pred_x = pred_x * torch.sqrt(sigma_norm)
+
+            x_t_minus_1 = x_t_minus_05 - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
+            l_t_minus_1 = c0 * (l_t_minus_05 - c1 * pred_l) + sigmas * rand_l if not self.keep_lattice else l_t
+            t_t_minus_1 = c0 * (t_t_minus_05 - c1 * pred_t) + sigmas * rand_t
+
+            traj[t - 1] = {
+                'num_atoms' : batch.num_atoms,
+                'atom_types' : t_t_minus_1,
+                'frac_coords' : x_t_minus_1 % 1.,
+                'lattices' : l_t_minus_1
+            }
+
+        traj_stack = {
+            'num_atoms' : batch.num_atoms,
+            'atom_types' : torch.stack([traj[i]['atom_types'] for i in range(time_start, -1, -1)]).argmax(dim=-1) + 1,
+            'all_frac_coords' : torch.stack([traj[i]['frac_coords'] for i in range(time_start, -1, -1)]),
+            'all_lattices' : torch.stack([traj[i]['lattices'] for i in range(time_start, -1, -1)])
+        }
+
+        res = traj[0]
+        res['atom_types'] = res['atom_types'].argmax(dim=-1) + 1
+
+        return traj[0], traj_stack
+
     @torch.no_grad()
     def fix_sample(self, batch, diff_ratio=1.0, step_lr=1e-5, w=1.0, fix_atom_type=28):
         batch_size = batch.num_graphs
@@ -759,17 +703,9 @@ class CSPDiffusion(BaseModule):
                 conditional=True
             )
 
-            pred_x = (1-w) * cod_pred_x + w * uncod_pred_x
-            pred_l = (1-w) * cod_pred_l + w * uncod_pred_l
-            pred_t = (1-w) * cod_pred_t + w * uncod_pred_t
-
-            # pred_x = (1+w) * uncod_pred_x - w * cod_pred_x
-            # pred_l = (1+w) * uncod_pred_l - w * cod_pred_l
-            # pred_t = (1+w) * uncod_pred_t - w * cod_pred_t
-
-            # pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
-            # pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
-            # pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
             x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x if not self.keep_coords else x_t
@@ -811,17 +747,9 @@ class CSPDiffusion(BaseModule):
                 conditional=True
             )
 
-            pred_x = (1-w) * cod_pred_x + w * uncod_pred_x
-            pred_l = (1-w) * cod_pred_l + w * uncod_pred_l
-            pred_t = (1-w) * cod_pred_t + w * uncod_pred_t
-
-            # pred_x = (1+w) * uncod_pred_x - w * cod_pred_x
-            # pred_l = (1+w) * uncod_pred_l - w * cod_pred_l
-            # pred_t = (1+w) * uncod_pred_t - w * cod_pred_t
-
-            # pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
-            # pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
-            # pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
+            pred_x = (1+w) * cod_pred_x - w * uncod_pred_x
+            pred_l = (1+w) * cod_pred_l - w * uncod_pred_l
+            pred_t = (1+w) * cod_pred_t - w * uncod_pred_t
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
 
